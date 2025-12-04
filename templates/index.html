@@ -1,0 +1,78 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>ClipCheck (Reddit)</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="container">
+    <h1>ClipCheck — Reddit Misinformation Quick-Check</h1>
+    <p>Paste a Reddit post URL that contains a clip. This tool inspects comments and similar posts to return a likelihood percentage that the clip is being used misleadingly.</p>
+
+    <form id="analyzeForm">
+      <input id="url" name="url" placeholder="Paste Reddit post URL (e.g. https://www.reddit.com/r/xyz/comments/abc123/)" />
+      <button type="submit">Analyze</button>
+    </form>
+
+    <div id="result" class="card" style="display:none;">
+      <h2>Result</h2>
+      <p><strong>Score:</strong> <span id="score"></span>%</p>
+      <h3>Post</h3>
+      <div id="post"></div>
+      <h3>Evidence</h3>
+      <div id="evidence"></div>
+    </div>
+
+    <div id="error" class="card error" style="display:none;"></div>
+  </div>
+
+<script>
+document.getElementById('analyzeForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const url = document.getElementById('url').value.trim();
+  if (!url) return alert('Provide a reddit post URL first');
+
+  document.getElementById('error').style.display='none';
+  document.getElementById('result').style.display='none';
+
+  const resp = await fetch('/analyze', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({url})
+  });
+
+  const data = await resp.json();
+  if (!resp.ok) {
+    document.getElementById('error').textContent = data.error || 'Unknown error';
+    document.getElementById('error').style.display='block';
+    return;
+  }
+
+  document.getElementById('score').textContent = data.score_percent;
+  document.getElementById('post').innerHTML = `
+    <b>Title:</b> ${data.post.title} <br/>
+    <b>Subreddit:</b> ${data.post.subreddit} <br/>
+    <b>Score:</b> ${data.post.score} | <b>Upvote ratio:</b> ${data.post.upvote_ratio} <br/>
+    <b>#Comments:</b> ${data.post.num_comments} <br/>
+    <b>URL:</b> <a href="${data.post.url}" target="_blank">Open post</a>
+  `;
+
+  let ev = `<b>Comment flag rate:</b> ${data.evidence.comment_flag_rate}<br/>`;
+  if (data.evidence.comment_examples && data.evidence.comment_examples.length){
+    ev += `<b>Example flagged comments:</b><ul>`;
+    data.evidence.comment_examples.forEach(c => ev += `<li>${c}</li>`);
+    ev += `</ul>`;
+  }
+  ev += `<b>Similar posts (search query: ${data.evidence.search_query || ''}):</b><ul>`;
+  (data.evidence.similar_posts || []).forEach(s => {
+    ev += `<li><a href="${s.url}" target="_blank">${s.title}</a> (r/${s.subreddit})</li>`;
+  });
+  ev += `</ul>`;
+
+  document.getElementById('evidence').innerHTML = ev;
+  document.getElementById('result').style.display='block';
+});
+</script>
+</body>
+</html>
