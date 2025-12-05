@@ -1,7 +1,7 @@
 # reddit_scraper.py
 import requests
 import time
-from urllib.parse import quote
+from urllib.parse import quote, urlparse, urlunparse
 
 # Use your Reddit username for User-Agent
 DEFAULT_HEADERS = {
@@ -9,13 +9,24 @@ DEFAULT_HEADERS = {
 }
 REQUEST_TIMEOUT = 10  # seconds
 
+def normalize_reddit_url(url: str) -> str:
+    """
+    Normalize a Reddit post URL:
+    - Remove query parameters and fragments
+    - Ensure trailing slash
+    """
+    parsed = urlparse(url)
+    cleaned = urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+    if not cleaned.endswith("/"):
+        cleaned += "/"
+    return cleaned
+
 def _to_json_url(post_url: str) -> str:
     """Ensure the URL ends with .json for Reddit API access."""
-    if post_url.endswith(".json"):
-        return post_url
-    if post_url.endswith("/"):
-        post_url = post_url[:-1]
-    return post_url + ".json"
+    normalized = normalize_reddit_url(post_url)
+    if not normalized.endswith(".json"):
+        normalized += ".json"
+    return normalized
 
 def fetch_submission_json(post_url: str, headers=None):
     """Fetch a Reddit submission and return JSON."""
@@ -88,3 +99,17 @@ def reddit_search_titles(query: str, limit=10, headers=None):
     # Be polite with Reddit
     time.sleep(0.5)
     return out
+
+# Example usage:
+if __name__ == "__main__":
+    test_links = [
+        "https://www.reddit.com/r/whatcarshouldIbuy/comments/1pdijcc/can_i_go_off_this/?utm_source=share&utm_medium=web3x",
+        "https://www.reddit.com/r/cyberpunkgame/comments/1pe31dp/realistically_what_is_the_expected_release/?utm_source=share&utm_medium=web3x"
+    ]
+    for link in test_links:
+        print("Normalized URL:", normalize_reddit_url(link))
+        print("JSON URL:", _to_json_url(link))
+        submission = parse_submission(link)
+        print("Title:", submission["title"])
+        print("Number of comments:", len(submission["comments"]))
+        print("-" * 40)
