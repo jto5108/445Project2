@@ -5,5 +5,5 @@ joblib
 pandas
 nltk
 selenium==4.15.0
-webdriver-manager==3.10.0
-beautifulsoup4==4.12.2
+webdriver-manager>=4.0.0
+flask>=2.3.0

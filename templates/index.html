@@ -2,26 +2,31 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>ClipCheck (Reddit)</title>
+  <title>ClipCheck - Reddit Misinformation Detection</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
   <div class="container">
-    <h1>ClipCheck — Reddit Misinformation Quick-Check</h1>
-    <p>Paste a Reddit post URL that contains a clip. This tool inspects comments and similar posts to return a likelihood percentage that the clip is being used misleadingly.</p>
+    <h1>ClipCheck — Reddit Misinformation Detection</h1>
+    <p>Enter a hashtag to search Reddit posts and analyze them for potential misinformation. The tool will return the top 10 posts ranked by Google search, each with a misinformation likelihood score.</p>
 
     <form id="analyzeForm">
-      <input id="url" name="url" placeholder="Paste Reddit post URL (e.g. https://www.reddit.com/r/xyz/comments/abc123/)" />
+      <input id="hashtag" name="hashtag" placeholder="Enter hashtag (e.g., #cyberpunk or cyberpunk)" />
       <button type="submit">Analyze</button>
     </form>
 
+    <div id="loading" class="card" style="display:none;">
+      <p>⏳ Scraping Reddit posts, training model, and analyzing... This may take 20-30 seconds.</p>
+      <small style="color: #666;">Steps: Scraping your hashtag → Scraping training data → Training ML model → Predicting scores</small>
+    </div>
+
     <div id="result" class="card" style="display:none;">
-      <h2>Result</h2>
-      <p><strong>Score:</strong> <span id="score"></span>%</p>
-      <h3>Post</h3>
-      <div id="post"></div>
-      <h3>Evidence</h3>
-      <div id="evidence"></div>
+      <h2>Analysis Results for <span id="hashtag-display"></span></h2>
+
+      <div id="statistics" class="stats-box"></div>
+
+      <h3>Top 10 Posts (Ranked by Google Search)</h3>
+      <div id="posts-list"></div>
     </div>
 
     <div id="error" class="card error" style="display:none;"></div>
@@ -30,48 +35,96 @@
 <script>
 document.getElementById('analyzeForm').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const url = document.getElementById('url').value.trim();
-  if (!url) return alert('Provide a reddit post URL first');
+  const hashtag = document.getElementById('hashtag').value.trim();
+  if (!hashtag) return alert('Please enter a hashtag');
 
   document.getElementById('error').style.display='none';
   document.getElementById('result').style.display='none';
+  document.getElementById('loading').style.display='block';
 
-  const resp = await fetch('/analyze', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({url})
-  });
+  try {
+    const resp = await fetch('/analyze', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({hashtag})
+    });
 
-  const data = await resp.json();
-  if (!resp.ok) {
-    document.getElementById('error').textContent = data.error || 'Unknown error';
+    const data = await resp.json();
+    document.getElementById('loading').style.display='none';
+
+    if (!resp.ok) {
+      document.getElementById('error').textContent = data.error || 'Unknown error';
+      document.getElementById('error').style.display='block';
+      return;
+    }
+
+    // Display hashtag and statistics
+    document.getElementById('hashtag-display').textContent = data.hashtag;
+
+    const stats = data.statistics;
+    document.getElementById('statistics').innerHTML = `
+      <div class="stat-grid">
+        <div class="stat-item">
+          <div class="stat-label">Total Posts</div>
+          <div class="stat-value">${data.total_posts}</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-label">Avg Score</div>
+          <div class="stat-value">${stats.avg_misinfo_score}%</div>
+        </div>
+        <div class="stat-item high-risk">
+          <div class="stat-label">High Risk</div>
+          <div class="stat-value">${stats.high_risk_count}</div>
+        </div>
+        <div class="stat-item medium-risk">
+          <div class="stat-label">Medium Risk</div>
+          <div class="stat-value">${stats.medium_risk_count}</div>
+        </div>
+        <div class="stat-item low-risk">
+          <div class="stat-label">Low Risk</div>
+          <div class="stat-value">${stats.low_risk_count}</div>
+        </div>
+      </div>
+    `;
+
+    // Display posts
+    let postsHtml = '';
+    data.posts.forEach(post => {
+      const riskClass = post.risk_level;
+      const riskLabel = post.risk_level.toUpperCase();
+      const keywordsHtml = post.keywords.length > 0
+        ? `<div class="keywords"><strong>Keywords:</strong> ${post.keywords.join(', ')}</div>`
+        : '';
+
+      postsHtml += `
+        <div class="post-card ${riskClass}">
+          <div class="post-header">
+            <span class="rank">#${post.rank}</span>
+            <span class="risk-badge ${riskClass}">${riskLabel} RISK</span>
+            <span class="score">${post.misinfo_score}%</span>
+          </div>
+          <h4><a href="${post.url}" target="_blank">${post.title}</a></h4>
+          <div class="post-meta">
+            <span>r/${post.subreddit}</span>
+            ${post.date ? ` • <span>${post.date}</span>` : ''}
+          </div>
+          <p class="snippet">${post.snippet}</p>
+          ${keywordsHtml}
+          <div class="post-details">
+            <small>Clickbait score: ${post.clickbait_score}</small>
+          </div>
+        </div>
+      `;
+    });
+
+    document.getElementById('posts-list').innerHTML = postsHtml;
+    document.getElementById('result').style.display='block';
+
+  } catch (error) {
+    document.getElementById('loading').style.display='none';
+    document.getElementById('error').textContent = 'Network error: ' + error.message;
     document.getElementById('error').style.display='block';
-    return;
   }
-
-  document.getElementById('score').textContent = data.score_percent;
-  document.getElementById('post').innerHTML = `
-    <b>Title:</b> ${data.post.title} <br/>
-    <b>Subreddit:</b> ${data.post.subreddit} <br/>
-    <b>Score:</b> ${data.post.score} | <b>Upvote ratio:</b> ${data.post.upvote_ratio} <br/>
-    <b>#Comments:</b> ${data.post.num_comments} <br/>
-    <b>URL:</b> <a href="${data.post.url}" target="_blank">Open post</a>
-  `;
-
-  let ev = `<b>Comment flag rate:</b> ${data.evidence.comment_flag_rate}<br/>`;
-  if (data.evidence.comment_examples && data.evidence.comment_examples.length){
-    ev += `<b>Example flagged comments:</b><ul>`;
-    data.evidence.comment_examples.forEach(c => ev += `<li>${c}</li>`);
-    ev += `</ul>`;
-  }
-  ev += `<b>Similar posts (search query: ${data.evidence.search_query || ''}):</b><ul>`;
-  (data.evidence.similar_posts || []).forEach(s => {
-    ev += `<li><a href="${s.url}" target="_blank">${s.title}</a> (r/${s.subreddit})</li>`;
-  });
-  ev += `</ul>`;
-
-  document.getElementById('evidence').innerHTML = ev;
-  document.getElementById('result').style.display='block';
 });
 </script>
 </body>
