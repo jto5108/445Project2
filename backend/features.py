@@ -63,7 +63,9 @@ def rank_score(rank: int):
 # TF-IDF wrapper (trained during training)
 class TextVectorizer:
     def __init__(self):
-        self.tfidf = TfidfVectorizer(ngram_range=(1,2), max_features=4000)
+        # Reduced from 4000 to 500 to prevent overfitting with small training sets
+        # Rule of thumb: features should be less than training samples
+        self.tfidf = TfidfVectorizer(ngram_range=(1,2), max_features=500)
 
     def fit(self, texts):
         self.tfidf.fit(texts)

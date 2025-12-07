@@ -48,9 +48,6 @@ htmlcov/
 ehthumbs.db
 Thumbs.db
 
-# Claude Code
-.claude/
-
 # Logs
 *.log
 

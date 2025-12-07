@@ -68,7 +68,7 @@ def scrape_training_data():
     for hashtag in misinfo_hashtags:
         print(f"  Searching {hashtag}...")
         try:
-            posts = search_reddit_by_hashtag(hashtag, num_results=5)
+            posts = search_reddit_by_hashtag(hashtag, num_results=15)
             for post in posts:
                 label = auto_label_post(post)
                 all_records.append(post)
@@ -81,7 +81,7 @@ def scrape_training_data():
     for hashtag in normal_hashtags:
         print(f"  Searching {hashtag}...")
         try:
-            posts = search_reddit_by_hashtag(hashtag, num_results=5)
+            posts = search_reddit_by_hashtag(hashtag, num_results=15)
             for post in posts:
                 label = auto_label_post(post)
                 all_records.append(post)
@@ -143,17 +143,32 @@ def main():
     X = hstack([X_text, X_eng])
     print(f"✓ Feature matrix shape: {X.shape}")
 
-    # Step 3: Train model
-    print("\nStep 3: Training Logistic Regression model...")
-    clf = LogisticRegression(max_iter=1000, random_state=42)
-    clf.fit(X, labels)
+    # Step 3: Split data into train and test sets
+    print("\nStep 3: Splitting data into train/test sets...")
+    from sklearn.model_selection import train_test_split
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, labels, test_size=0.2, random_state=42, stratify=labels
+    )
+    print(f"✓ Training samples: {X_train.shape[0]}")
+    print(f"✓ Test samples: {X_test.shape[0]}")
 
-    # Show accuracy
-    train_acc = clf.score(X, labels)
+    # Step 4: Train model
+    print("\nStep 4: Training Logistic Regression model...")
+    clf = LogisticRegression(max_iter=1000, random_state=42, class_weight='balanced')
+    clf.fit(X_train, y_train)
+
+    # Show accuracy on both train and test
+    train_acc = clf.score(X_train, y_train)
+    test_acc = clf.score(X_test, y_test)
     print(f"✓ Training accuracy: {train_acc * 100:.1f}%")
+    print(f"✓ Test accuracy: {test_acc * 100:.1f}%")
 
-    # Step 4: Save model
-    print("\nStep 4: Saving model...")
+    if train_acc > test_acc + 0.15:
+        print(f"⚠️  Warning: Large gap between train and test accuracy suggests overfitting!")
+
+    # Step 5: Save model (train on full dataset for production)
+    print("\nStep 5: Re-training on full dataset and saving model...")
+    clf.fit(X, labels)  # Train on all data for production use
     joblib.dump(clf, "misinfo_logreg_model.joblib")
     joblib.dump(vectorizer.tfidf, "tfidf_vectorizer.joblib")
     print("✓ Model saved: misinfo_logreg_model.joblib")

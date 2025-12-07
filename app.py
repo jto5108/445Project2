@@ -8,6 +8,8 @@ from flask import Flask, render_template, request, jsonify
 import joblib
 import numpy as np
 from scipy.sparse import hstack
+from datetime import datetime, timedelta
+import hashlib
 
 # Add backend directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'backend'))
@@ -23,6 +25,27 @@ VECT_PATH = os.path.join("backend", "tfidf_vectorizer.joblib")
 
 # Global model cache
 _model_cache = {}
+
+# Cache for scraping results (hashtag -> {data, timestamp})
+# Results expire after 1 hour
+_scrape_cache = {}
+CACHE_EXPIRY_HOURS = 1
+
+def get_cached_scrape(hashtag):
+    """Get cached scraping results if available and not expired"""
+    if hashtag in _scrape_cache:
+        cache_entry = _scrape_cache[hashtag]
+        age = datetime.now() - cache_entry['timestamp']
+        if age < timedelta(hours=CACHE_EXPIRY_HOURS):
+            return cache_entry['data']
+    return None
+
+def set_cached_scrape(hashtag, data):
+    """Cache scraping results with timestamp"""
+    _scrape_cache[hashtag] = {
+        'data': data,
+        'timestamp': datetime.now()
+    }
 
 def load_model():
     """Load the trained model and vectorizer"""
@@ -67,16 +90,24 @@ def analyze():
 
         app.logger.info(f"=== Starting real-time analysis for: {hashtag} ===")
 
-        # STEP 1: Scrape user's requested posts
+        # STEP 1: Scrape user's requested posts (with caching)
         app.logger.info("STEP 1: Scraping user's requested posts...")
-        user_posts = search_reddit_by_hashtag(hashtag, num_results=10)
+        cached_user_posts = get_cached_scrape(hashtag)
+        if cached_user_posts:
+            user_posts = cached_user_posts
+            app.logger.info(f"Using cached results for {hashtag}")
+        else:
+            user_posts = search_reddit_by_hashtag(hashtag, num_results=10)
+            if user_posts:
+                set_cached_scrape(hashtag, user_posts)
+                app.logger.info(f"Scraped and cached {len(user_posts)} posts for {hashtag}")
 
         if not user_posts:
             return jsonify({"error": f"No Reddit posts found for {hashtag}. Try another hashtag."}), 404
 
         app.logger.info(f"Found {len(user_posts)} posts for user query")
 
-        # STEP 2: Scrape fresh training data
+        # STEP 2: Scrape fresh training data (with caching)
         app.logger.info("STEP 2: Scraping fresh training data...")
         training_posts = []
         training_labels = []
@@ -84,20 +115,34 @@ def analyze():
         # Scrape misinformation-prone hashtags for positive examples
         for train_tag in ["#conspiracy", "#leaked", "#exposed"]:
             try:
-                posts = search_reddit_by_hashtag(train_tag, num_results=3)
+                cached_posts = get_cached_scrape(train_tag)
+                if cached_posts:
+                    posts = cached_posts
+                    app.logger.info(f"  Using cached data for {train_tag}")
+                else:
+                    posts = search_reddit_by_hashtag(train_tag, num_results=10)
+                    if posts:
+                        set_cached_scrape(train_tag, posts)
+                        app.logger.info(f"  Scraped and cached {len(posts)} from {train_tag}")
                 training_posts.extend(posts)
                 training_labels.extend([1] * len(posts))  # Label as misinformation
-                app.logger.info(f"  Scraped {len(posts)} from {train_tag}")
             except Exception as e:
                 app.logger.warning(f"  Failed to scrape {train_tag}: {e}")
 
         # Scrape normal hashtags for negative examples
         for train_tag in ["#gaming", "#technology", "#help"]:
             try:
-                posts = search_reddit_by_hashtag(train_tag, num_results=3)
+                cached_posts = get_cached_scrape(train_tag)
+                if cached_posts:
+                    posts = cached_posts
+                    app.logger.info(f"  Using cached data for {train_tag}")
+                else:
+                    posts = search_reddit_by_hashtag(train_tag, num_results=10)
+                    if posts:
+                        set_cached_scrape(train_tag, posts)
+                        app.logger.info(f"  Scraped and cached {len(posts)} from {train_tag}")
                 training_posts.extend(posts)
                 training_labels.extend([0] * len(posts))  # Label as normal
-                app.logger.info(f"  Scraped {len(posts)} from {train_tag}")
             except Exception as e:
                 app.logger.warning(f"  Failed to scrape {train_tag}: {e}")
 
@@ -118,14 +163,32 @@ def analyze():
         # STEP 3: Train model on fresh data
         app.logger.info("STEP 3: Training model on fresh data...")
         X_text, X_eng, vectorizer = build_feature_matrix(training_posts, vectorizer=None)
-        X_train = hstack([X_text, X_eng])
+        X_all = hstack([X_text, X_eng])
 
         from sklearn.linear_model import LogisticRegression
-        clf = LogisticRegression(max_iter=1000, random_state=42)
-        clf.fit(X_train, training_labels)
+        from sklearn.model_selection import train_test_split
 
-        train_acc = clf.score(X_train, training_labels)
-        app.logger.info(f"Model trained - accuracy: {train_acc * 100:.1f}%")
+        # Split data for validation
+        if len(training_posts) >= 10:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X_all, training_labels, test_size=0.2, random_state=42, stratify=training_labels
+            )
+            clf = LogisticRegression(max_iter=1000, random_state=42, class_weight='balanced')
+            clf.fit(X_train, y_train)
+
+            train_acc = clf.score(X_train, y_train)
+            test_acc = clf.score(X_test, y_test)
+            app.logger.info(f"Model trained - Train accuracy: {train_acc * 100:.1f}%, Test accuracy: {test_acc * 100:.1f}%")
+
+            # Retrain on all data for prediction
+            clf.fit(X_all, training_labels)
+        else:
+            # Not enough data for split, just train on all
+            clf = LogisticRegression(max_iter=1000, random_state=42, class_weight='balanced')
+            clf.fit(X_all, training_labels)
+            train_acc = clf.score(X_all, training_labels)
+            test_acc = train_acc
+            app.logger.info(f"Model trained - accuracy: {train_acc * 100:.1f}% (no test split - insufficient data)")
 
         # STEP 4: Predict on user's posts
         app.logger.info("STEP 4: Predicting misinformation likelihood...")
@@ -139,7 +202,6 @@ def analyze():
             misinfo_score = float(probs[i] * 100)
 
             text = " ".join(filter(None, [rec.get("title", ""), rec.get("snippet", "")]))
-            from backend.features import clickbait_score
             cb_score = clickbait_score(text)
 
             keywords = [k for k in ["confirmed", "leaked", "official", "proof", "cure",
@@ -181,7 +243,8 @@ def analyze():
             },
             "training_info": {
                 "samples_scraped": len(training_posts),
-                "model_accuracy": f"{train_acc * 100:.1f}%"
+                "train_accuracy": f"{train_acc * 100:.1f}%",
+                "test_accuracy": f"{test_acc * 100:.1f}%"
             }
         }
 
@@ -212,12 +275,17 @@ if __name__ == '__main__':
         print(f"Please run: python backend/train_model.py")
         print("This will generate the required model files.\n")
 
+    # Configure debug mode via environment variable (default: False for production)
+    debug_mode = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
+
     # Run the Flask app on port 5001 (port 5000 is used by macOS AirPlay)
     print("\n" + "="*60)
-    print("🚀 Starting ClipCheck Server...")
+    print("Starting ClipCheck Server...")
     print("="*60)
-    print("📍 Server running at: http://localhost:5001")
-    print("📍 Also available at: http://127.0.0.1:5001")
+    print("Server running at: http://localhost:5001")
+    print("Also available at: http://127.0.0.1:5001")
+    print(f"Debug mode: {'ON' if debug_mode else 'OFF'}")
+    print(f"Cache expiry: {CACHE_EXPIRY_HOURS} hour(s)")
     print("\nPress CTRL+C to stop the server")
     print("="*60 + "\n")
-    app.run(debug=True, host='0.0.0.0', port=5001)
+    app.run(debug=debug_mode, host='0.0.0.0', port=5001)
