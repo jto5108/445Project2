@@ -33,7 +33,7 @@
 ### Setup (One Time)
 
 ```bash
-cd /Users/gabrielsilva/Desktop/445Project2
+cd ~Desktop/445Project2
 pip install -r backend/requirements.txt
 ```
 
